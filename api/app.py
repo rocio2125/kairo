@@ -4,6 +4,7 @@ import psycopg2
 from groq import Groq
 import json
 from dotenv import load_dotenv
+from flask_cors import CORS
 
 load_dotenv()
 
@@ -28,6 +29,9 @@ else:
     print("❌ ERROR: La variable DATABASE_URL está vacía o es None.")
 print("------------------")
 # -----------------------------
+
+# HABILITAR CORS
+CORS(app, supports_credentials=True)
 
 # modelo Groq a usar
 modelo_groq = "llama-3.3-70b-versatile"  # Último modelo disponible
