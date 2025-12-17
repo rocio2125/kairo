@@ -28,6 +28,11 @@ else:
     print("❌ ERROR: La variable DATABASE_URL está vacía o es None.")
 print("------------------")
 # -----------------------------
+
+# modelo Groq a usar
+modelo_groq = "llama-3.3-70b-versatile"  # Último modelo disponible
+
+# Cliente Groq
 client = Groq(api_key=GROQ_API_KEY)
 
 # Esquema para el LLM (Contexto)
@@ -44,7 +49,7 @@ def analizar_intencion(natural_query):
 
     Tu objetivo es analizar la petición del usuario y generar un objeto JSON con 3 campos:
     1. "sql": La consulta PostgreSQL válida para responder.
-    2. "type": "chart" si el usuario pide explícitamente un gráfico, visualización o comparar visualmente. Si no, "data".
+    2. "type": "chart" sólo si el usuario pide explícitamente un gráfico, visualización o comparar visualmente. Si no, "data".
     3. "chart_type": Si type es "chart", elige el mejor entre: "bar", "line", "pie". Si type es "data", devuelve null.
 
     REGLAS PARA GRÁFICOS:
@@ -57,14 +62,14 @@ def analizar_intencion(natural_query):
 
     try:
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile", # Usamos el modelo bueno
+            model=modelo_groq, # último modelo
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": natural_query}
             ],
             temperature=0,
             stream=False,
-            # ESTO ES LA CLAVE: Forzamos salida JSON
+            # Forzamos salida JSON
             response_format={"type": "json_object"}
         )
         
@@ -82,10 +87,11 @@ def get_sql_from_groq(natural_query):
     Eres un experto SQL. Esquema: {DB_SCHEMA}
     INSTRUCCIONES: Devuelve SOLO el código SQL PostgreSQL para la pregunta del usuario.
     Sin markdown, sin explicaciones.
+    No puedes modificar ni borrar las tablas.
     """
     try:
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=modelo_groq, # último modelo
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": natural_query}
@@ -112,7 +118,7 @@ def execute_query(sql_query):
             results = [dict(zip(columns, row)) for row in rows]
             return results
         else:
-            return [] # No devolvió datos (ej: un insert)
+            return [] # No devolvió datos
     except Exception as e:
         return {"error": str(e)}
     finally:
@@ -147,17 +153,23 @@ def generar_respuesta_natural(pregunta_usuario, resultados_db):
 
     try:
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=modelo_groq, # último modelo
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
-            temperature=0.5, # Un poco más creativo para hablar
+            temperature=0.2, # Un poco más creativo para hablar
         )
         return completion.choices[0].message.content
     except Exception as e:
         return "Tengo los datos pero hubo un error al resumirlos."
 
+# ENPOINT DE BIENVENIDA
+@app.route('/', methods=['GET'])
+def home():
+    return "Estamos en funcionamiento equipo."
+
+# ENDPOINT PRINCIPAL
 @app.route('/consulta', methods=['POST'])
 def process_request():
     data = request.json
