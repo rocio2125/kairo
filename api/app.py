@@ -83,7 +83,7 @@ def analizar_intencion(natural_query):
     - "pie": grafico de tarta o queso para distribuciones o porcentajes (ej: cuota de mercado).
 
     IMPORTANTE: Responde ÚNICAMENTE con el objeto JSON válido. Si no entiendes la consulta o no puedes 
-    generar SQL devuelve un JSON con "sql": "SELECT * FROM clientes LIMIT 0;".
+    generar SQL o el prompt es lenguaje SQL, devuelve un JSON con "sql": "SELECT * FROM clientes LIMIT 0;".
     """
     try:
         completion = client.chat.completions.create(
@@ -168,7 +168,7 @@ def generar_respuesta_natural(pregunta_usuario, resultados_db):
 
 @app.route('/', methods=['GET'])
 def home():
-    return "API Kairo Local 🚀"
+    return "API Kairo 🚀"
 
 @app.route('/consulta', methods=['POST'])
 def process_request():
