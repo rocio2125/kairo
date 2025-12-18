@@ -13,8 +13,8 @@ st.set_page_config(
 
 # --- CONFIGURACIÓN URL BACKEND ---
 # Intenta leer la variable de entorno (Docker), si no, usa localhost
-API_URL = "http://127.0.0.1:5000/consulta"
-#API_URL = "https://kairo-ejt6.onrender.com/consulta"
+DEFAULT_URL = "http://127.0.0.1:5000/consulta"
+API_URL = os.environ.get("BACKEND_URL", DEFAULT_URL)
 
 # --- SIDEBAR ---
 with st.sidebar:

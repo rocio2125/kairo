@@ -4,69 +4,39 @@ import psycopg2
 from groq import Groq
 import json
 from dotenv import load_dotenv
-from flask_cors import CORS
-import socket
-from datetime import datetime, timezone # <--- CAMBIO 1: Importamos timezone
 
-# Intentamos cargar .env (busca en la carpeta actual o superior)
 load_dotenv()
 
 app = Flask(__name__)
 
-# ======================
 # CONFIGURACIÓN
-# ======================
 DB_URI = os.environ.get("DATABASE_URL")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-QRADAR_HOST = os.environ.get("QRADAR_HOST", "127.0.0.1")
-QRADAR_PORT = int(os.environ.get("QRADAR_PORT", 1514))
 
-# HABILITAR CORS
-CORS(app, supports_credentials=True)
-
-# CLIENTE GROQ
-modelo_groq = "llama-3.3-70b-versatile"
+# --- PRINT PARA DEPURAR ---
+print("--- DEBUG INFO ---")
+print(f"Directorio actual: {os.getcwd()}")
+if GROQ_API_KEY:
+    print(f"API Key cargada: {GROQ_API_KEY[:5]}... (Oculta)")
+else:
+    print("ERROR CRÍTICO: No se encontró GROQ_API_KEY")
+print("------------------")
+print("--- DEBUG BBDD ---")
+if DB_URI:
+    print(f"URL BBDD detectada: {DB_URI[:15]}...") # Solo muestra el principio
+else:
+    print("❌ ERROR: La variable DATABASE_URL está vacía o es None.")
+print("------------------")
+# -----------------------------
 client = Groq(api_key=GROQ_API_KEY)
 
-# ESQUEMA DB
+# Esquema para el LLM (Contexto)
 DB_SCHEMA = """
 Tabla 1: clientes (columnas: id_cliente,nombre,apellidos,email,pais,ciudad,edad,genero)
 Tabla 2: transacciones (columnas: id_transaccion,id_cliente,fecha_compra,producto,categoria_producto,precio_unitario,cantidad,importe_total,metodo_pago,coste_envio,coste_fabricacion)
 Relación: clientes.id_cliente = transacciones.id_cliente
 """
-
-# ======================
-# FUNCIÓN LOGS (Silenciosa en Local)
-# ======================
-def send_to_qradar(level, message, extra=None):
-    # <--- CAMBIO 2: Arreglado el warning de datetime
-    timestamp = datetime.now(timezone.utc).isoformat()
-    
-    hostname = "bi-api"
-    appname = "flask-groq"
-    payload = {
-        "level": level,
-        "message": message,
-        "extra": extra or {},
-        "timestamp": timestamp
-    }
-    syslog_message = f"<134>{timestamp} {hostname} {appname}: {json.dumps(payload)}\n"
-    
-    try:
-        # Timeout muy corto (0.5s) para no bloquear tu PC si no hay QRadar
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.5) 
-        s.connect((QRADAR_HOST, QRADAR_PORT))
-        s.sendall(syslog_message.encode())
-        s.close()
-    except Exception:
-        # Si falla (porque estás en local), no hacemos nada ni imprimimos error.
-        # Así mantenemos la terminal limpia.
-        pass
-
-# ======================
-# LÓGICA
-# ======================
+# --- Analizar intención ---
 def analizar_intencion(natural_query):
     system_prompt = f"""
     Eres un asistente experto en Data Science y SQL. 
@@ -74,7 +44,7 @@ def analizar_intencion(natural_query):
 
     Tu objetivo es analizar la petición del usuario y generar un objeto JSON con 3 campos:
     1. "sql": La consulta PostgreSQL válida para responder.
-    2. "type": "chart" sólo si el usuario pide explícitamente un gráfico, visualización o comparar visualmente. Si no, "data".
+    2. "type": "chart" si el usuario pide explícitamente un gráfico, visualización o comparar visualmente. Si no, "data".
     3. "chart_type": Si type es "chart", elige el mejor entre: "bar", "line", "pie". Si type es "data", devuelve null.
 
     REGLAS PARA GRÁFICOS:
@@ -82,46 +52,74 @@ def analizar_intencion(natural_query):
     - "line": grafico de líneas para series temporales (ej: ventas por año/mes).
     - "pie": grafico de tarta o queso para distribuciones o porcentajes (ej: cuota de mercado).
 
-    IMPORTANTE: Responde ÚNICAMENTE con el objeto JSON válido. Si no entiendes la consulta o no puedes 
-    generar SQL devuelve un JSON con "sql": "SELECT * FROM clientes LIMIT 0;".
+    IMPORTANTE: Responde ÚNICAMENTE con el objeto JSON válido.
+    """
+
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile", # Usamos el modelo bueno
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": natural_query}
+            ],
+            temperature=0,
+            stream=False,
+            # ESTO ES LA CLAVE: Forzamos salida JSON
+            response_format={"type": "json_object"}
+        )
+        
+        # Parseamos el texto JSON a un diccionario de Python real
+        respuesta_json = json.loads(completion.choices[0].message.content)
+        return respuesta_json
+        
+    except Exception as e:
+        print(f"❌ Error en Groq: {e}")
+        return None
+    
+# --- Generar SQL ---
+def get_sql_from_groq(natural_query):
+    system_prompt = f"""
+    Eres un experto SQL. Esquema: {DB_SCHEMA}
+    INSTRUCCIONES: Devuelve SOLO el código SQL PostgreSQL para la pregunta del usuario.
+    Sin markdown, sin explicaciones.
     """
     try:
         completion = client.chat.completions.create(
-            model=modelo_groq,
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": natural_query}],
-            temperature=0, stream=False, response_format={"type": "json_object"}
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": natural_query}
+            ],
+            temperature=0, 
+            stream=False,
         )
-        return json.loads(completion.choices[0].message.content)
+        return completion.choices[0].message.content.replace("```sql", "").replace("```", "").strip()
     except Exception as e:
-        print(f"❌ ERROR GROQ: {e}") # <--- Verás esto en terminal si falla Groq
+        print(f"❌ ERROR REAL EN GROQ: {e}")
         return None
 
+# --- Ejecutar en DB ---
 def execute_query(sql_query):
-    if not sql_query.strip().upper().startswith("SELECT"):
-        return {"error": "Seguridad: Solo se permite SELECT."}
-
-    send_to_qradar("INFO", "Ejecutando SQL", {"sql": sql_query})
     conn = None
     try:
-        # Importante: Si esto falla, saltará al 'except' de abajo
         conn = psycopg2.connect(DB_URI)
-        conn.set_session(readonly=True)
         cur = conn.cursor()
         cur.execute(sql_query)
         
         if cur.description:
             columns = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
-        return []
-            
+            results = [dict(zip(columns, row)) for row in rows]
+            return results
+        else:
+            return [] # No devolvió datos (ej: un insert)
     except Exception as e:
-        print(f"❌ ERROR BBDD: {e}") # <--- Verás esto en terminal si falla la base de datos
         return {"error": str(e)}
-        
     finally:
-        if conn: conn.close()
+        if conn:
+            conn.close()
 
+# --- Generar Respuesta Natural ---
 def generar_respuesta_natural(pregunta_usuario, resultados_db):
     """
     Toma la pregunta y los datos crudos, y crea una frase amable.
@@ -138,10 +136,8 @@ def generar_respuesta_natural(pregunta_usuario, resultados_db):
     1. Recibirás una PREGUNTA del usuario y unos DATOS (resultado de una base de datos).
     2. Debes responder a la pregunta basándote EXCLUSIVAMENTE en los datos proporcionados.
     3. Si los datos están vacíos, di amablemente que no encontraste información.
-    4. No menciones "SQL" ni "Query" a menos que sea necesario. Habla en lenguaje natural.
+    4. No menciones "SQL" ni "Query" ni "ID" a menos que sea necesario. Habla en lenguaje natural.
     5. Si hay muchos datos, resume los hallazgos principales.
-    6. Si te piden una visualización o gráfico, ignora esa parte y céntrate en dar una respuesta textual clara. 
-    No menciones la petición ni nada relaccionado con graficos.
     """
     
     user_message = f"""
@@ -151,56 +147,54 @@ def generar_respuesta_natural(pregunta_usuario, resultados_db):
 
     try:
         completion = client.chat.completions.create(
-            model=modelo_groq, # último modelo
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
-            temperature=0.2, # Un poco más creativo para hablar
+            temperature=0.5, # Un poco más creativo para hablar
         )
         return completion.choices[0].message.content
     except Exception as e:
         return "Tengo los datos pero hubo un error al resumirlos."
-
-# ======================
-# ENDPOINTS
-# ======================
-
-@app.route('/', methods=['GET'])
-def home():
-    return "API Kairo Local 🚀"
 
 @app.route('/consulta', methods=['POST'])
 def process_request():
     data = request.json
     pregunta = data.get('prompt')
     
-    print(f"📩 Recibida pregunta: {pregunta}") # Debug
+    if not pregunta:
+        return jsonify({"error": "Falta el prompt"}), 400
 
-    # 1. Analizar
+    # 1. Analizar intención (SQL + Gráfico)
     analisis = analizar_intencion(pregunta)
+    
     if not analisis or "sql" not in analisis:
-        return jsonify({"error": "Fallo en Groq al generar SQL"}), 500
-    
-    # 2. Consultar
-    raw_data = execute_query(analisis["sql"])
-    
-    # Si la BBDD devolvió error, devolvemos 500 y mostramos el detalle
-    if isinstance(raw_data, dict) and "error" in raw_data:
-        print(f"⚠️ Devolviendo Error 500 por fallo SQL: {raw_data['error']}")
-        return jsonify({"respuesta": "Error Técnico", "detalle": raw_data}), 500
-    
-    # 3. Responder
-    respuesta = generar_respuesta_natural(pregunta, raw_data)
-    
-    return jsonify({
-        "metadata": {"prompt": pregunta},
-        "sql": analisis["sql"],
-        "type": analisis.get("type", "data"),
-        "chart_type": analisis.get("chart_type"),
-        "data": raw_data,
-        "respuesta_bot": respuesta
-    })
+        return jsonify({"error": "No se pudo generar la consulta."}), 500
 
+    sql_query = analisis["sql"]
+    tipo_respuesta = analisis.get("type", "data")
+    tipo_grafico = analisis.get("chart_type", None)
+
+    # 2. Consultar Datos
+    raw_data = execute_query(sql_query)
+    
+    if isinstance(raw_data, dict) and "error" in raw_data:
+        return jsonify({"respuesta": "Error SQL", "detalle": raw_data}), 500
+
+    # 3. Generar Conversación
+    respuesta_bot = generar_respuesta_natural(pregunta, raw_data)
+    
+    # 4. Devolver TODO al frontend
+    return jsonify({
+        "metadata": {
+                "prompt": pregunta
+            },
+        "sql": sql_query,
+        "type": tipo_respuesta,       
+        "chart_type": tipo_grafico,   
+        "data": raw_data,             
+        "respuesta_bot": respuesta_bot
+    })
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
